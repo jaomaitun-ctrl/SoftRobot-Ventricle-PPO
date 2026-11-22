@@ -8,7 +8,8 @@ ventricle.
 
 The notebook walks through the full pipeline:
 - turning patient data (planned path, ventricle mesh, Kocher fiducials) into a simulation environment
-- the **environment**, **observation** and **action** spaces (residual control on a nominal curvature schedule)
+- wrapping the SOFA scene as a **Gymnasium environment** (`reset`/`step` on top of SofaPython3, no SofaGym)
+- the **observation** and **action** spaces (residual control on a nominal curvature schedule)
 - the **reward function**, term by term, on recorded episodes
 - the **policy** (actor-critic MLP), loaded and queried without the simulator
 - **PPO training**: hyperparameters, learning curves, diagnostics
