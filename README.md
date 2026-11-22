@@ -64,7 +64,7 @@ Retraining or running SOFA needs a SOFA v26.06 build; see [`sofa_rl/ENVIRONMENT.
 | Path | Contents |
 |---|---|
 | `SoftRobot_Ventricle_PPO.ipynb` | Tutorial notebook |
-| `sofa_rl/` | Everything else: SOFA scene, Gymnasium environment, PPO training and evaluation (`rl/`), Gradio app, patient 44 data, results (logs, models, recorded episodes), figures, 2-page summary (`summary.pdf`), environment spec, video script |
+| `sofa_rl/` | Everything else: SOFA scene, Gymnasium environment, PPO training and evaluation (`rl/`), Gradio app, patient 44 data, results (logs, models, recorded episodes), figures, 2-page summary (`summary.pdf`), environment spec |
 
 ## Data
 
