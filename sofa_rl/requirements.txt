@@ -1,0 +1,9 @@
+# Notebook + Gradio demo (no SOFA needed). Python >= 3.10.
+numpy>=1.26
+matplotlib>=3.8
+jupyter>=1.0
+torch>=2.2            # CPU is enough; used to load and query the trained policies
+stable-baselines3==2.6.0
+gymnasium==1.1.1
+gradio>=5.0
+plotly>=5.20
