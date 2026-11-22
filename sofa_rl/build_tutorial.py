@@ -130,13 +130,142 @@ Bending comes from chamber pressures computed through a Yeoh hyperelastic actuat
 solved as a linear complementarity problem (Gauss-Seidel, tolerance 1e-6). This tolerance is part of
 the task: a coarser solver sends the robot into a different ventricle branch at a bifurcation.
 
-**Gymnasium wrapper.** `VentricleNavEnv` (`sofa_rl/rl/ventricle_env.py`) exposes the usual API.
-One RL step = 10 SOFA steps = 0.1 s. Each environment runs in its own process because the SOFA scene
-reads its configuration at import.
+### 2.1 Building the Gymnasium environment
+
+No RL plugin for SOFA (such as SofaGym) is used. The SOFA scene is wrapped directly in a
+[Gymnasium](https://gymnasium.farama.org/) environment, `VentricleNavEnv` in `sofa_rl/rl/ventricle_env.py`
+(about 230 lines). Gymnasium is a standard interface: any class that subclasses `gym.Env` and provides the
+members below can be trained by any Gymnasium-compatible library, here Stable-Baselines3. The library never
+sees SOFA; it only calls `reset()` and `step()`.
+
+| Member | Contract | What `VentricleNavEnv` does |
+|---|---|---|
+| `action_space` | shape and bounds of an action | `Box(-1, 1, (5,))`: insertion + 4 curvature residuals |
+| `observation_space` | shape and bounds of an observation | `Box(-10, 10, (35,))`: tip, path, shape, wall, force (Section 3) |
+| `reset(seed)` | start an episode, return `obs, info` | unload the old SOFA scene, build a new one with `createScene()`, settle for 2 steps |
+| `step(action)` | advance once, return `obs, reward, terminated, truncated, info` | action → depth and chamber pressures → 10 SOFA steps → measure → reward |
+| `close()` | release resources | unload the SOFA scene |
+
+The interaction loop that PPO runs is:
+
+```
+obs, info = env.reset()
+repeat:
+    action = policy(obs)
+    obs, reward, terminated, truncated, info = env.step(action)
+    if terminated or truncated: obs, info = env.reset()
+```
+
+Inside `step()` the work splits into four helpers:
+
+1. **`apply_action(a)`** turns the 5 numbers in [−1, 1] into an insertion depth and two curvature
+   vectors, then into chamber pressures (Yeoh moment law), and writes them to the scene's controller.
+2. **`Sofa.Simulation.animate()`** is called 10 times (10 × 10 ms = 0.1 s of simulated time).
+3. **`_state()`** reads the result back from SOFA: node positions (`MechanicalObject.position`), contact
+   forces from the constraint solver (`constraintForces`), distances to the wall mesh and to the planned path.
+4. **`_obs()`** and the reward formula turn that state into the 35-value observation and a scalar reward.
+
+`attach()` and `apply_action()` are separate methods so that the same code also runs inside the runSofa GUI:
+`rl/policy_scene.py` lets runSofa build the scene, then calls `attach()` and `apply_action()` every 10 steps,
+so a trained policy drives the robot with exactly the logic it was trained with.
 """)
 code(r"""
 env_src = f'{ROOT}/rl/ventricle_env.py'
+src = open(env_src).read()
+cls = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.ClassDef) and n.name == 'VentricleNavEnv')
+print('class VentricleNavEnv(gym.Env):   # methods and their length')
+for f in cls.body:
+    if isinstance(f, ast.FunctionDef):
+        print(f'  {f.end_lineno - f.lineno + 1:3d} lines   def {f.name}({", ".join(a.arg for a in f.args.args)})')
+""")
+md(r"""
+**Constructor.** Imports SOFA and the scene module, loads the patient's wall mesh and planned path,
+and declares the two spaces.
+""")
+code(r"""
+show(env_src, '__init__')
+""")
+md(r"""
+**`reset()`** rebuilds the SOFA scene from scratch, so every episode starts with the robot retracted in
+the sheath at Kocher's point. `attach()` binds the environment to the scene's controller and constraint
+solver, finds the goal (the path point at the robot's full length) and zeroes the commands.
+""")
+code(r"""
 show(env_src, 'reset')
+show(env_src, 'attach')
+""")
+md(r"""
+**`step()`** applies the action, advances SOFA, measures and scores. `terminated` ends the episode on
+full insertion (success bonus) or on leaving the ventricle (penalty); `truncated` is the step limit.
+""")
+code(r"""
+show(env_src, 'step')
+""")
+md(r"""
+**`_state()`** is where the simulator is read. Everything the observation and reward need is computed
+here in millimetres.
+""")
+code(r"""
+show(env_src, '_state')
+""")
+md(r"""
+**The spaces are plain Gymnasium objects.** They define what the policy network sees and outputs:
+the network has 35 inputs and outputs the mean of a 5-D Gaussian whose samples are clipped to the action box.
+""")
+code(r"""
+from gymnasium import spaces
+action_space = spaces.Box(-1.0, 1.0, (5,), np.float32)
+observation_space = spaces.Box(-10.0, 10.0, (35,), np.float32)
+action_space.seed(0)
+print('action space     ', action_space)
+print('observation space', observation_space)
+print('random action    ', np.round(action_space.sample(), 3))
+print('recorded v2 obs in bounds:', all(observation_space.contains(o.astype(np.float32)) for o in ep['obs']))
+""")
+md(r"""
+**The contract in action, without SOFA.** To show that Stable-Baselines3 depends only on the Gymnasium
+interface, the cell below defines `ReplayEnv`: an environment with the same spaces that replays the
+recorded v2 episode instead of simulating. Gymnasium's own `check_env` validates it, SB3 wraps it in a
+vectorised environment, and the trained v2 policy runs on it. With SOFA installed, replacing `ReplayEnv`
+by `VentricleNavEnv` is the only change needed (`rl/check_env.py` runs the same check on the real environment).
+""")
+code(r"""
+import gymnasium as gym
+from gymnasium.utils.env_checker import check_env
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv
+
+class ReplayEnv(gym.Env):
+    # same interface as VentricleNavEnv; returns the recorded observations and rewards instead of simulating
+    def __init__(self, episode):
+        self.e = episode
+        self.action_space = spaces.Box(-1.0, 1.0, (5,), np.float32)
+        self.observation_space = spaces.Box(-10.0, 10.0, (35,), np.float32)
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.t = 0
+        return self.e['obs'][0].astype(np.float32), {}
+    def step(self, action):
+        self.t += 1
+        T = len(self.e['action'])
+        obs = self.e['obs'][self.t].astype(np.float32)
+        info = {'goal_err_mm': float(self.e['goal_err_mm'][self.t - 1])}
+        return obs, float(self.e['reward'][self.t - 1]), self.t >= T, False, info
+
+check_env(ReplayEnv(ep), skip_render_check=True)          # raises if the API is not respected
+print('gymnasium check_env: passed')
+
+venv = DummyVecEnv([lambda: ReplayEnv(ep)])                # SB3 vectorised env (training used SubprocVecEnv x 5)
+policy = PPO.load(f'{RES}/ppo_p44_server_v2_shape/final_model.zip', device='cpu')
+obs, ret, n = venv.reset(), 0.0, 0
+while True:
+    act, _ = policy.predict(obs, deterministic=True)
+    obs, r, done, info = venv.step(act)
+    ret, n = ret + r[0], n + 1
+    if done[0]:
+        break
+print(f'{n} steps through the SB3 API, return {ret:.2f} (recorded {ep["reward"].sum():.2f}), '
+      f'final goal error {info[0]["goal_err_mm"]:.2f} mm')
 """)
 code(r"""
 if RUN_SOFA:     # needs the SOFA build; run from sofa_rl/ with rl/run.sh (macOS) or rl/run_server.sh (Linux)
